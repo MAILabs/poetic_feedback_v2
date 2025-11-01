@@ -33,6 +33,12 @@ A browser-based application that performs real-time face detection from webcam f
 - Uses [face-api.js](https://github.com/justadudewhohacks/face-api.js) for face detection
 - Models are loaded from CDN on first use
 - All processing happens client-side using TensorFlow.js
+- **Movement Speed Calculation**:
+  - Tracks face positions across frames
+  - Calculates velocity vectors in Cartesian coordinates
+  - Converts to polar coordinates (magnitude = speed, angle = direction)
+  - Averages speed over a sliding window (30 frames)
+  - Displays speed in pixels per second
 
 ## Note
 
