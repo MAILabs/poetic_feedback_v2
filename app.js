@@ -16,6 +16,12 @@ let previousDetections = [];
 const SPEED_WINDOW_SIZE = 30; // Number of frames to average speed over
 const MIN_FRAMES_FOR_SPEED = 5; // Minimum frames before showing speed
 
+// Video frame buffer for blur effect (moving average over last 5 frames)
+const FRAME_BUFFER_SIZE = 5;
+const frameBuffer = [];
+let offscreenCanvas = null;
+let offscreenCtx = null;
+
 // Load face-api models
 async function loadModels() {
     try {
@@ -51,7 +57,7 @@ async function startCamera() {
             video: {
                 width: { ideal: 1280 },
                 height: { ideal: 720 },
-                facingMode: 'user'
+//                facingMode: 'user'
             }
         });
         
@@ -61,6 +67,12 @@ async function startCamera() {
             // Set canvas size to match video
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
+            
+            // Create offscreen canvas for frame buffer
+            offscreenCanvas = document.createElement('canvas');
+            offscreenCanvas.width = video.videoWidth;
+            offscreenCanvas.height = video.videoHeight;
+            offscreenCtx = offscreenCanvas.getContext('2d');
             
             statusEl.textContent = 'Camera ready';
             statusEl.className = 'success';
@@ -98,6 +110,7 @@ function stopCamera() {
     faceMovementData.clear();
     previousDetections = [];
     frameCount = 0;
+    frameBuffer.length = 0; // Clear frame buffer
     
     isRunning = false;
     startBtn.disabled = false;
@@ -289,6 +302,69 @@ async function detectFaces() {
     frameCount++;
     const currentTime = frameCount;
     
+    // Capture current frame to offscreen canvas
+    offscreenCtx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+    const currentFrameData = offscreenCtx.getImageData(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+    
+    // Add current frame to buffer
+    frameBuffer.push(currentFrameData);
+    if (frameBuffer.length > FRAME_BUFFER_SIZE) {
+        frameBuffer.shift(); // Remove oldest frame
+    }
+    
+    // Calculate moving average (blur effect) and apply brightness reduction
+    // Always draw the video frame (with blur if we have enough frames)
+    if (frameBuffer.length > 0) {
+        const blendedFrame = new ImageData(offscreenCanvas.width, offscreenCanvas.height);
+        const pixelCount = blendedFrame.data.length / 4;
+        const bufferLength = frameBuffer.length;
+        
+        for (let i = 0; i < pixelCount; i++) {
+            let r = 0, g = 0, b = 0;
+            
+            // Average across all frames in buffer
+            frameBuffer.forEach(frame => {
+                const idx = i * 4;
+                r += frame.data[idx];
+                g += frame.data[idx + 1];
+                b += frame.data[idx + 2];
+            });
+            
+            // Calculate average
+            r = Math.round(r / bufferLength);
+            g = Math.round(g / bufferLength);
+            b = Math.round(b / bufferLength);
+            
+            // Apply brightness reduction (50% = multiply by 0.5)
+            r = Math.round(r * 0.5);
+            g = Math.round(g * 0.5);
+            b = Math.round(b * 0.5);
+            
+            const idx = i * 4;
+            blendedFrame.data[idx] = r;
+            blendedFrame.data[idx + 1] = g;
+            blendedFrame.data[idx + 2] = b;
+            blendedFrame.data[idx + 3] = 255; // Alpha
+        }
+        
+        // Draw blurred and darkened video to canvas
+        // ctx.putImageData(blendedFrame, 0, 0);
+    } else {
+        // If no frames in buffer yet, draw current frame directly (darkened)
+        offscreenCtx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+        const frameData = offscreenCtx.getImageData(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+        const pixelData = frameData.data;
+        
+        // Apply brightness reduction (50%)
+        for (let i = 0; i < pixelData.length; i += 4) {
+            pixelData[i] = Math.round(pixelData[i] * 0.5);     // R
+            pixelData[i + 1] = Math.round(pixelData[i + 1] * 0.5); // G
+            pixelData[i + 2] = Math.round(pixelData[i + 2] * 0.5); // B
+        }
+        
+        // ctx.putImageData(frameData, 0, 0);
+    }
+    
     // Use face-api to detect faces with all required information
     const detections = await faceapi
         .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
@@ -298,9 +374,6 @@ async function detectFaces() {
     
     // Update movement tracking
     updateMovementTracking(detections, currentTime);
-    
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
     
     // Draw detections
     detections.forEach(detection => {
@@ -325,19 +398,23 @@ async function detectFaces() {
             : 'Speed: calculating...';
         
         // Draw rectangle around face
+        // Both video and canvas are mirrored via CSS transform: scaleX(-1)
+        // Face detection gives coordinates in the video's natural (non-mirrored) coordinate system
+        // Since both video and canvas are mirrored the same way, the coordinates align directly
+        // We draw at the same natural coordinates that face detection provides
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save();
+        
         ctx.strokeStyle = '#4CAF50';
         ctx.lineWidth = 3;
         ctx.strokeRect(box.x, box.y, box.width, box.height);
         
-        // Prepare text information
-        const textX = box.x;
-        const textY = box.y - 10;
-        const fontSize = Math.max(16, box.width / 25);
+        ctx.restore();
         
+        // Prepare text information
+        // Since canvas is mirrored via CSS, we need to flip text coordinates
+        const fontSize = Math.max(16, box.width / 25);
         ctx.font = `bold ${fontSize}px Arial`;
-        ctx.fillStyle = '#4CAF50';
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
         
         // Format gender with probability
         const genderText = `${gender} (${Math.round(genderProbability * 100)}%)`;
@@ -354,6 +431,10 @@ async function detectFaces() {
             ...textLines.map(line => ctx.measureText(line).width)
         );
         
+        // Calculate text position (both video and canvas are mirrored the same way, so coordinates align)
+        const textX = box.x;
+        const textY = box.y - 10;
+        
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.fillRect(
             textX - padding,
@@ -363,7 +444,6 @@ async function detectFaces() {
         );
         
         // Draw text
-        ctx.fillStyle = '#fff';
         ctx.textBaseline = 'bottom';
         
         textLines.forEach((line, index) => {
@@ -374,6 +454,7 @@ async function detectFaces() {
                 ctx.fillStyle = '#fff';
             }
             
+            // Draw text at original position (coordinates align since both are mirrored the same way)
             ctx.fillText(
                 line,
                 textX,
@@ -381,7 +462,6 @@ async function detectFaces() {
             );
         });
     });
-    
     // Continue detection loop (target ~30 FPS)
     requestAnimationFrame(detectFaces);
 }
