@@ -17,13 +17,18 @@ const SPEED_WINDOW_SIZE = 30; // Number of frames to average speed over
 const MIN_FRAMES_FOR_SPEED = 5; // Minimum frames before showing speed
 
 // Phrase display tracking (single phrase for largest face)
-let phraseDisplayData = { // {currentPhrase: string, lastUpdateTime: number, lastEmotion: string, lastSpeed: number}
+let phraseDisplayData = { // {currentPhrase: string, lastUpdateTime: number, lastEmotion: string, lastSpeed: number, audioFinishTime: number}
     currentPhrase: null,
     lastUpdateTime: 0,
     lastEmotion: 'neutral',
-    lastSpeed: null
+    lastSpeed: null,
+    audioFinishTime: 0 // When the current audio will finish playing
 };
 const PHRASE_UPDATE_INTERVAL = 3000; // Update phrase every 3 seconds (in milliseconds)
+const PHRASE_POST_AUDIO_DELAY = 2500; // Wait 2.5 seconds after audio finishes before next phrase (in milliseconds)
+
+// Audio playback tracking
+let currentAudio = null; // Currently playing Audio object
 
 // Video frame buffer for blur effect (moving average over last 5 frames)
 const FRAME_BUFFER_SIZE = 5;
@@ -117,12 +122,18 @@ function stopCamera() {
     
     // Clear movement tracking data
     faceMovementData.clear();
+    // Stop any playing audio
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+    }
     // Reset phrase display data
     phraseDisplayData = {
         currentPhrase: null,
         lastUpdateTime: 0,
         lastEmotion: 'neutral',
-        lastSpeed: null
+        lastSpeed: null,
+        audioFinishTime: 0
     };
     previousDetections = [];
     frameCount = 0;
@@ -308,6 +319,64 @@ function getAverageSpeed(faceId) {
     };
 }
 
+// Convert phrase text to filename format (remove punctuation, replace spaces with underscores, add .wav)
+function phraseToFilename(phrase) {
+    if (!phrase) return null;
+    // Remove punctuation but keep letters (including Cyrillic), numbers, spaces, and + character
+    // Remove common punctuation: . , ! ? : ; " ' ( ) [ ] { } - etc.
+    let filename = phrase.replace(/[.,!?:;"'()\[\]{}\-–—…]/g, '');
+    // Replace spaces with underscores
+    filename = filename.replace(/\s+/g, '_');
+    filename = filename.replace(/\+/g, '');
+    // Add .wav extension
+    return filename + '.wav';
+}
+
+// Play audio for a phrase
+function playPhraseAudio(phrase) {
+    if (!phrase) return;
+    
+    // Stop any currently playing audio
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+    }
+    
+    const filename = phraseToFilename(phrase);
+    if (!filename) return;
+    
+    const audioPath = `vocals/${filename}`;
+    const audio = new Audio(audioPath);
+    
+    audio.onloadeddata = () => {
+        // Calculate when audio will finish
+        const duration = audio.duration * 1000; // Convert to milliseconds
+        phraseDisplayData.audioFinishTime = Date.now() + duration;
+    };
+    
+    audio.onended = () => {
+        // Audio finished, set finish time (with small buffer)
+        phraseDisplayData.audioFinishTime = Date.now();
+        currentAudio = null;
+    };
+    
+    audio.onerror = (error) => {
+        console.warn(`Failed to load audio file: ${audioPath}`, error);
+        // If audio fails to load, set finish time immediately so we don't wait forever
+        phraseDisplayData.audioFinishTime = Date.now();
+        currentAudio = null;
+    };
+    
+    // Play the audio
+    audio.play().catch(error => {
+        console.warn(`Failed to play audio: ${audioPath}`, error);
+        phraseDisplayData.audioFinishTime = Date.now();
+        currentAudio = null;
+    });
+    
+    currentAudio = audio;
+}
+
 // Detect faces and draw results
 async function detectFaces() {
     if (!isRunning || video.readyState !== video.HAVE_ENOUGH_DATA) {
@@ -424,28 +493,49 @@ async function detectFaces() {
         const speedPixelsPerFrame = speedData ? speedData.avgSpeed : null;
         
         // Update phrase if interval has passed or emotion/speed changed significantly
+        // But only if audio has finished playing + delay period
         const currentTime = Date.now();
         const timeSinceLastUpdate = currentTime - phraseDisplayData.lastUpdateTime;
+        const timeSinceAudioFinished = currentTime - phraseDisplayData.audioFinishTime;
         const emotionChanged = phraseDisplayData.lastEmotion !== dominantEmotionX;
         const speedChanged = phraseDisplayData.lastSpeed !== speedPixelsPerFrame && 
                             (phraseDisplayData.lastSpeed === null || speedPixelsPerFrame === null || 
                              Math.abs(phraseDisplayData.lastSpeed - speedPixelsPerFrame) > 50);
         
-        if (timeSinceLastUpdate >= PHRASE_UPDATE_INTERVAL || 
-            (timeSinceLastUpdate >= 1000 && (emotionChanged || speedChanged))) {
+        // Check if we can update (audio must have finished + delay period passed)
+        // If audioFinishTime is 0, it means no audio has been played yet, so allow update
+        const canUpdate = phraseDisplayData.audioFinishTime === 0 || timeSinceAudioFinished >= PHRASE_POST_AUDIO_DELAY;
+        
+        // If there's a current phrase but audio hasn't been played yet, play it
+        if (phraseDisplayData.currentPhrase && phraseDisplayData.audioFinishTime === 0 && !currentAudio) {
+            playPhraseAudio(phraseDisplayData.currentPhrase);
+        }
+        
+        if (canUpdate && (timeSinceLastUpdate >= PHRASE_UPDATE_INTERVAL || 
+            (timeSinceLastUpdate >= 1000 && (emotionChanged || speedChanged)))) {
             if (phraseSelector.ready) {
                 const newPhrase = phraseSelector.selectPhrase(dominantEmotionX, speedPixelsPerFrame);
-                if (newPhrase) {
+                if (newPhrase && newPhrase !== phraseDisplayData.currentPhrase) {
                     phraseDisplayData.currentPhrase = newPhrase;
                     phraseDisplayData.lastUpdateTime = currentTime;
                     phraseDisplayData.lastEmotion = dominantEmotionX;
                     phraseDisplayData.lastSpeed = speedPixelsPerFrame;
+                    
+                    // Play audio for the new phrase immediately
+                    playPhraseAudio(newPhrase);
                 }
             }
         }
     } else {
-        // No faces detected - clear phrase
-        phraseDisplayData.currentPhrase = null;
+        // No faces detected - clear phrase and stop audio
+        if (phraseDisplayData.currentPhrase) {
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio = null;
+            }
+            phraseDisplayData.currentPhrase = null;
+            phraseDisplayData.audioFinishTime = Date.now();
+        }
     }
     
     // Draw detections

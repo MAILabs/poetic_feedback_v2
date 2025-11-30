@@ -1,4 +1,3 @@
-// Phrases data loaded as JavaScript to avoid CORS issues
 const PHRASES_DATA = {
   "angry": {
     "hi": [
@@ -139,4 +138,3 @@ const PHRASES_DATA = {
     ]
   }
 };
-
