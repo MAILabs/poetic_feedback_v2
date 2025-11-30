@@ -653,18 +653,22 @@ async function detectFaces() {
         const phraseX = box.x;
         
         // Draw background for better visibility
-        const phraseWidth = ctx.measureText(phraseDisplayData.currentPhrase).width;
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-        ctx.fillRect(
-            phraseX - 5,
-            phraseY - 2,
-            phraseWidth + 10,
-            phraseFontSize + 4
-        );
-        
+        if (false) {
+            const phraseWidth = ctx.measureText(phraseDisplayData.currentPhrase).width;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(
+                phraseX - 5,
+                phraseY - 2,
+                phraseWidth + 10,
+                phraseFontSize + 4
+            );
+        }        
         // Draw phrase text
+        // Option 1: Make the phrase text larger (increase font size significantly)
         ctx.fillStyle = '#FFD700';
-        ctx.fillText(phraseDisplayData.currentPhrase, phraseX, phraseY);
+        ctx.font = `italic bold ${phraseFontSize * 1.6}px Arial, sans-serif`; // Increase size by 60%
+        ctx.fillText(phraseDisplayData.currentPhrase.replace(/\+/g, ''), phraseX, phraseY);
+
     }
     // Continue detection loop (target ~30 FPS)
     requestAnimationFrame(detectFaces);
