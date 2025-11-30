@@ -349,6 +349,7 @@ async function detectFaces() {
         
         // Draw blurred and darkened video to canvas
         // ctx.putImageData(blendedFrame, 0, 0);
+        drawdata = blendedFrame;
     } else {
         // If no frames in buffer yet, draw current frame directly (darkened)
         offscreenCtx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
@@ -363,6 +364,7 @@ async function detectFaces() {
         }
         
         // ctx.putImageData(frameData, 0, 0);
+        drawdata = frameData;
     }
     
     // Use face-api to detect faces with all required information
@@ -403,6 +405,7 @@ async function detectFaces() {
         // Since both video and canvas are mirrored the same way, the coordinates align directly
         // We draw at the same natural coordinates that face detection provides
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.putImageData(drawdata, 0, 0);
         ctx.save();
         
         ctx.strokeStyle = '#4CAF50';
@@ -435,13 +438,15 @@ async function detectFaces() {
         const textX = box.x;
         const textY = box.y - 10;
         
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(
-            textX - padding,
-            textY - (textLines.length * lineHeight) - padding,
-            maxWidth + (padding * 2),
-            (textLines.length * lineHeight) + (padding * 2)
-        );
+        if (false) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(
+                textX - padding,
+                textY - (textLines.length * lineHeight) - padding,
+                maxWidth + (padding * 2),
+                (textLines.length * lineHeight) + (padding * 2)
+            );
+        }     
         
         // Draw text
         ctx.textBaseline = 'bottom';
