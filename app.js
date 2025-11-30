@@ -16,6 +16,15 @@ let previousDetections = [];
 const SPEED_WINDOW_SIZE = 30; // Number of frames to average speed over
 const MIN_FRAMES_FOR_SPEED = 5; // Minimum frames before showing speed
 
+// Phrase display tracking (single phrase for largest face)
+let phraseDisplayData = { // {currentPhrase: string, lastUpdateTime: number, lastEmotion: string, lastSpeed: number}
+    currentPhrase: null,
+    lastUpdateTime: 0,
+    lastEmotion: 'neutral',
+    lastSpeed: null
+};
+const PHRASE_UPDATE_INTERVAL = 3000; // Update phrase every 3 seconds (in milliseconds)
+
 // Video frame buffer for blur effect (moving average over last 5 frames)
 const FRAME_BUFFER_SIZE = 5;
 const frameBuffer = [];
@@ -108,6 +117,13 @@ function stopCamera() {
     
     // Clear movement tracking data
     faceMovementData.clear();
+    // Reset phrase display data
+    phraseDisplayData = {
+        currentPhrase: null,
+        lastUpdateTime: 0,
+        lastEmotion: 'neutral',
+        lastSpeed: null
+    };
     previousDetections = [];
     frameCount = 0;
     frameBuffer.length = 0; // Clear frame buffer
@@ -377,6 +393,61 @@ async function detectFaces() {
     // Update movement tracking
     updateMovementTracking(detections, currentTime);
     
+    // Find the largest face (by width) for phrase display
+    let largestFace = null;
+    let largestWidth = 0;
+    detections.forEach(detection => {
+        const box = detection.detection.box;
+        if (box.width > largestWidth) {
+            largestWidth = box.width;
+            largestFace = detection;
+        }
+    });
+    
+    // Manage phrase display for the largest face (if any)
+    if (largestFace) {
+        const box = largestFace.detection.box;
+        const expressions = largestFace.expressions;
+        const faceId = largestFace.faceId;
+        
+        // Compute dominant emotion excluding 'neutral'
+        const emotionsExNeutral = Object.keys(expressions).filter(k => k !== 'neutral');
+        let dominantEmotionX = 'neutral';
+        if (emotionsExNeutral.length > 0) {
+            dominantEmotionX = emotionsExNeutral.reduce((a, b) => 
+                expressions[a] > expressions[b] ? a : b
+            );
+        }
+        
+        // Get movement speed in pixels/frame for phrase selection
+        const speedData = getAverageSpeed(faceId);
+        const speedPixelsPerFrame = speedData ? speedData.avgSpeed : null;
+        
+        // Update phrase if interval has passed or emotion/speed changed significantly
+        const currentTime = Date.now();
+        const timeSinceLastUpdate = currentTime - phraseDisplayData.lastUpdateTime;
+        const emotionChanged = phraseDisplayData.lastEmotion !== dominantEmotionX;
+        const speedChanged = phraseDisplayData.lastSpeed !== speedPixelsPerFrame && 
+                            (phraseDisplayData.lastSpeed === null || speedPixelsPerFrame === null || 
+                             Math.abs(phraseDisplayData.lastSpeed - speedPixelsPerFrame) > 50);
+        
+        if (timeSinceLastUpdate >= PHRASE_UPDATE_INTERVAL || 
+            (timeSinceLastUpdate >= 1000 && (emotionChanged || speedChanged))) {
+            if (phraseSelector.ready) {
+                const newPhrase = phraseSelector.selectPhrase(dominantEmotionX, speedPixelsPerFrame);
+                if (newPhrase) {
+                    phraseDisplayData.currentPhrase = newPhrase;
+                    phraseDisplayData.lastUpdateTime = currentTime;
+                    phraseDisplayData.lastEmotion = dominantEmotionX;
+                    phraseDisplayData.lastSpeed = speedPixelsPerFrame;
+                }
+            }
+        }
+    } else {
+        // No faces detected - clear phrase
+        phraseDisplayData.currentPhrase = null;
+    }
+    
     // Draw detections
     detections.forEach(detection => {
         const box = detection.detection.box;
@@ -392,6 +463,17 @@ async function detectFaces() {
             emotions[a] > emotions[b] ? a : b
         );
         const emotionConfidence = Math.round(emotions[dominantEmotion] * 100);
+
+        // Compute dominant emotion excluding 'neutral'
+        const emotionsExNeutral = Object.keys(emotions).filter(k => k !== 'neutral');
+        let dominantEmotionX = 'neutral';
+        let dominantEmotionXConfidence = 0;
+        if (emotionsExNeutral.length > 0) {
+            dominantEmotionX = emotionsExNeutral.reduce((a, b) => 
+                emotions[a] > emotions[b] ? a : b
+            );
+            dominantEmotionXConfidence = Math.round(emotions[dominantEmotionX] * 100);
+        }
         
         // Get movement speed
         const speedData = getAverageSpeed(faceId);
@@ -467,6 +549,33 @@ async function detectFaces() {
             );
         });
     });
+    
+    // Draw phrase below the largest face (if any face is detected and phrase exists)
+    if (largestFace && phraseDisplayData.currentPhrase) {
+        const box = largestFace.detection.box;
+        const phraseFontSize = Math.max(14, box.width / 30);
+        ctx.font = `italic ${phraseFontSize}px Arial`;
+        ctx.fillStyle = '#FFD700'; // Gold color for phrases
+        ctx.textBaseline = 'top';
+        
+        // Draw phrase below the face box
+        const phraseY = box.y + box.height + 10;
+        const phraseX = box.x;
+        
+        // Draw background for better visibility
+        const phraseWidth = ctx.measureText(phraseDisplayData.currentPhrase).width;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(
+            phraseX - 5,
+            phraseY - 2,
+            phraseWidth + 10,
+            phraseFontSize + 4
+        );
+        
+        // Draw phrase text
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText(phraseDisplayData.currentPhrase, phraseX, phraseY);
+    }
     // Continue detection loop (target ~30 FPS)
     requestAnimationFrame(detectFaces);
 }
@@ -476,7 +585,10 @@ startBtn.addEventListener('click', startCamera);
 stopBtn.addEventListener('click', stopCamera);
 
 // Initialize on page load
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
+    // Load phrase selector
+    await phraseSelector.loadPhrases();
+    // Load face detection models
     loadModels();
 });
 
