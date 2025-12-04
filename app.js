@@ -386,7 +386,7 @@ function playPhraseAudio(phrase, isVLM = false) {
     let audioPath;
     if (isVLM) {
         // For VLM phrases, use the voice.mp3 endpoint
-        audioPath = 'http://dh.ycloud.eazify.net:8000/voice.mp3';
+        audioPath = 'https://dh.ycloud.eazify.net:8443/voice.mp3';
     } else {
         // For local phrases, use the vocals directory
         const filename = phraseToFilename(phrase);
@@ -485,7 +485,7 @@ async function fetchPOFPhrases() {
         // Capture current frame as JPG
         const imageBlob = await captureFrameAsJPG();
         
-        const response = await fetch('http://dh.ycloud.eazify.net:8000/pof', {
+        const response = await fetch('https://dh.ycloud.eazify.net:8443/pof', {
             method: 'POST',
             headers: {
                 'Content-Type': 'image/jpeg'
