@@ -8,42 +8,144 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     min-height: 100vh;
+    overflow: hidden;
+}
+
+/* Initial start screen */
+.start-screen {
+    width: 100vw;
+    height: 100vh;
     display: flex;
     justify-content: center;
     align-items: center;
-    padding: 20px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 10;
 }
 
-.container {
+.start-container {
     background: white;
     border-radius: 20px;
-    padding: 30px;
+    padding: 50px;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-    max-width: 900px;
-    width: 100%;
+    text-align: center;
+    max-width: 500px;
+    width: 90%;
 }
 
-h1 {
-    text-align: center;
+.start-container h1 {
     color: #333;
-    margin-bottom: 20px;
-    font-size: 2em;
+    margin-bottom: 40px;
+    font-size: 2.5em;
+}
+
+.start-container #startBtn {
+    padding: 18px 50px;
+    font-size: 20px;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-weight: 600;
+    background: #4CAF50;
+    color: white;
+    margin-bottom: 30px;
+}
+
+.start-container #startBtn:hover:not(:disabled) {
+    background: #45a049;
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(76, 175, 80, 0.3);
+}
+
+.start-container #startBtn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.status-text {
+    color: #666;
+    font-size: 14px;
+}
+
+#status {
+    font-weight: 600;
+    color: #667eea;
+}
+
+.status-text .loading {
+    color: #ff9800;
+}
+
+.status-text .error {
+    color: #f44336;
+}
+
+.status-text .success {
+    color: #4CAF50;
+}
+
+/* Full-screen view */
+.full-screen-view {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #000;
+    z-index: 20;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.full-screen-view.hidden {
+    display: none;
+}
+
+.close-button {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    width: 50px;
+    height: 50px;
+    background: rgba(255, 255, 255, 0.2);
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    border-radius: 50%;
+    color: white;
+    font-size: 32px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    z-index: 30;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 0;
+    font-weight: 300;
+}
+
+.close-button:hover {
+    background: rgba(255, 255, 255, 0.3);
+    border-color: rgba(255, 255, 255, 0.8);
+    transform: scale(1.1);
 }
 
 .video-container {
     position: relative;
     width: 100%;
-    max-width: 800px;
-    margin: 0 auto 20px;
-    border-radius: 10px;
-    overflow: hidden;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
     background: #000;
 }
 
 #video {
     width: 100%;
-    height: auto;
+    height: 100%;
+    object-fit: contain;
     display: block;
     opacity: 0.5;
     transform: scaleX(1);
@@ -57,72 +159,5 @@ h1 {
     height: 100%;
     pointer-events: none;
     transform: scaleX(1);
-}
-
-.controls {
-    display: flex;
-    justify-content: center;
-    gap: 15px;
-    margin-bottom: 20px;
-}
-
-button {
-    padding: 12px 30px;
-    font-size: 16px;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    font-weight: 600;
-}
-
-#startBtn {
-    background: #4CAF50;
-    color: white;
-}
-
-#startBtn:hover:not(:disabled) {
-    background: #45a049;
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(76, 175, 80, 0.3);
-}
-
-#stopBtn {
-    background: #f44336;
-    color: white;
-}
-
-#stopBtn:hover:not(:disabled) {
-    background: #da190b;
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(244, 67, 54, 0.3);
-}
-
-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-.info {
-    text-align: center;
-    color: #666;
-    font-size: 14px;
-}
-
-#status {
-    font-weight: 600;
-    color: #667eea;
-}
-
-.loading {
-    color: #ff9800;
-}
-
-.error {
-    color: #f44336;
-}
-
-.success {
-    color: #4CAF50;
 }
 

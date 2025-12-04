@@ -3,8 +3,10 @@ const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
+const closeBtn = document.getElementById('closeBtn');
 const statusEl = document.getElementById('status');
+const fullScreenView = document.getElementById('fullScreenView');
+const startScreen = document.getElementById('startScreen');
 
 let isRunning = false;
 let detectionInterval = null;
@@ -17,18 +19,27 @@ const SPEED_WINDOW_SIZE = 30; // Number of frames to average speed over
 const MIN_FRAMES_FOR_SPEED = 5; // Minimum frames before showing speed
 
 // Phrase display tracking (single phrase for largest face)
-let phraseDisplayData = { // {currentPhrase: string, lastUpdateTime: number, lastEmotion: string, lastSpeed: number, audioFinishTime: number}
+let phraseDisplayData = { // {currentPhrase: string, lastUpdateTime: number, lastEmotion: string, lastSpeed: number, audioFinishTime: number, isVLM: boolean}
     currentPhrase: null,
     lastUpdateTime: 0,
     lastEmotion: 'neutral',
     lastSpeed: null,
-    audioFinishTime: 0 // When the current audio will finish playing
+    audioFinishTime: 0, // When the current audio will finish playing
+    isVLM: false // Whether this phrase is VLM-generated
 };
 const PHRASE_UPDATE_INTERVAL = 3000; // Update phrase every 3 seconds (in milliseconds)
 const PHRASE_POST_AUDIO_DELAY = 2500; // Wait 2.5 seconds after audio finishes before next phrase (in milliseconds)
 
 // Audio playback tracking
 let currentAudio = null; // Currently playing Audio object
+
+// Phrase cycle tracking
+let localPhraseCount = 0; // Counter for local phrases selected (reset after 3)
+let isInPOFMode = false; // Whether we're currently displaying POF phrases
+let pofPhrases = []; // Array of phrases from POF endpoint
+let currentPOFPhraseIndex = 0; // Current index in POF phrases array
+let pofRequestInProgress = false; // Track if POF request is currently in progress
+const LOCAL_PHRASES_BEFORE_POF = 3; // Number of local phrases before calling POF
 
 // Video frame buffer for blur effect (moving average over last 5 frames)
 const FRAME_BUFFER_SIZE = 5;
@@ -64,6 +75,7 @@ async function loadModels() {
 // Start webcam
 async function startCamera() {
     try {
+        startBtn.disabled = true;
         statusEl.textContent = 'Accessing camera...';
         statusEl.className = 'loading';
         
@@ -90,8 +102,11 @@ async function startCamera() {
             
             statusEl.textContent = 'Camera ready';
             statusEl.className = 'success';
-            startBtn.disabled = true;
-            stopBtn.disabled = false;
+            
+            // Switch to full-screen view
+            startScreen.style.display = 'none';
+            fullScreenView.classList.remove('hidden');
+            
             isRunning = true;
             
             // Start detection loop
@@ -101,6 +116,7 @@ async function startCamera() {
         console.error('Error accessing camera:', error);
         statusEl.textContent = 'Error accessing camera. Please allow camera permissions.';
         statusEl.className = 'error';
+        startBtn.disabled = false;
     }
 }
 
@@ -133,15 +149,25 @@ function stopCamera() {
         lastUpdateTime: 0,
         lastEmotion: 'neutral',
         lastSpeed: null,
-        audioFinishTime: 0
+        audioFinishTime: 0,
+        isVLM: false
     };
+    // Reset phrase cycle tracking
+    localPhraseCount = 0;
+    isInPOFMode = false;
+    pofPhrases = [];
+    currentPOFPhraseIndex = 0;
+    pofRequestInProgress = false;
     previousDetections = [];
     frameCount = 0;
     frameBuffer.length = 0; // Clear frame buffer
     
+    // Switch back to start screen
+    fullScreenView.classList.add('hidden');
+    startScreen.style.display = 'flex';
+    
     isRunning = false;
     startBtn.disabled = false;
-    stopBtn.disabled = true;
     statusEl.textContent = 'Camera stopped';
     statusEl.className = '';
 }
@@ -319,6 +345,21 @@ function getAverageSpeed(faceId) {
     };
 }
 
+// Helper function to select and display local phrase
+function selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime) {
+    const newPhrase = phraseSelector.selectPhrase(dominantEmotionX, speedPixelsPerFrame);
+    if (newPhrase && newPhrase !== phraseDisplayData.currentPhrase) {
+        phraseDisplayData.currentPhrase = newPhrase;
+        phraseDisplayData.lastUpdateTime = currentTime;
+        phraseDisplayData.lastEmotion = dominantEmotionX;
+        phraseDisplayData.lastSpeed = speedPixelsPerFrame;
+        phraseDisplayData.isVLM = false;
+        
+        // Play audio for the new phrase immediately
+        playPhraseAudio(newPhrase, false);
+    }
+}
+
 // Convert phrase text to filename format (remove punctuation, replace spaces with underscores, add .wav)
 function phraseToFilename(phrase) {
     if (!phrase) return null;
@@ -332,8 +373,8 @@ function phraseToFilename(phrase) {
     return filename + '.wav';
 }
 
-// Play audio for a phrase
-function playPhraseAudio(phrase) {
+// Play audio for a phrase (local or VLM)
+function playPhraseAudio(phrase, isVLM = false) {
     if (!phrase) return;
     
     // Stop any currently playing audio
@@ -342,10 +383,17 @@ function playPhraseAudio(phrase) {
         currentAudio = null;
     }
     
-    const filename = phraseToFilename(phrase);
-    if (!filename) return;
+    let audioPath;
+    if (isVLM) {
+        // For VLM phrases, use the voice.mp3 endpoint
+        audioPath = 'http://dh.ycloud.eazify.net:8000/voice.mp3';
+    } else {
+        // For local phrases, use the vocals directory
+        const filename = phraseToFilename(phrase);
+        if (!filename) return;
+        audioPath = `vocals/${filename}`;
+    }
     
-    const audioPath = `vocals/${filename}`;
     const audio = new Audio(audioPath);
     
     audio.onloadeddata = () => {
@@ -358,6 +406,27 @@ function playPhraseAudio(phrase) {
         // Audio finished, set finish time (with small buffer)
         phraseDisplayData.audioFinishTime = Date.now();
         currentAudio = null;
+        
+        // If we're in POF mode, move to next phrase
+        if (isInPOFMode && pofPhrases.length > 0) {
+            currentPOFPhraseIndex++;
+            
+            if (currentPOFPhraseIndex < pofPhrases.length) {
+                // There are more POF phrases, display and play the next one
+                setTimeout(() => {
+                    phraseDisplayData.currentPhrase = pofPhrases[currentPOFPhraseIndex];
+                    phraseDisplayData.lastUpdateTime = Date.now();
+                    // Play audio for next POF phrase after a short delay    
+                    playPhraseAudio(pofPhrases[currentPOFPhraseIndex], true);
+                }, PHRASE_POST_AUDIO_DELAY);
+            } else {
+                // All POF phrases are done, switch back to local phrases
+                isInPOFMode = false;
+                pofPhrases = [];
+                currentPOFPhraseIndex = 0;
+                localPhraseCount = 0; // Reset counter to start new cycle
+            }
+        }
     };
     
     audio.onerror = (error) => {
@@ -375,6 +444,89 @@ function playPhraseAudio(phrase) {
     });
     
     currentAudio = audio;
+}
+
+// Capture current video frame as JPG blob
+function captureFrameAsJPG() {
+    return new Promise((resolve, reject) => {
+        try {
+            // Create a temporary canvas to capture the video frame
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Draw current video frame to canvas
+            tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+            
+            // Convert to blob (JPG)
+            tempCanvas.toBlob((blob) => {
+                if (blob) {
+                    resolve(blob);
+                } else {
+                    reject(new Error('Failed to create blob from canvas'));
+                }
+            }, 'image/jpeg', 0.9); // 90% quality
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+// Fetch phrases from POF endpoint
+async function fetchPOFPhrases() {
+    if (pofRequestInProgress) {
+        return; // Don't start another request if one is in progress
+    }
+    
+    try {
+        pofRequestInProgress = true;
+        
+        // Capture current frame as JPG
+        const imageBlob = await captureFrameAsJPG();
+        
+        const response = await fetch('http://dh.ycloud.eazify.net:8000/pof', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'image/jpeg'
+            },
+            body: imageBlob
+        });
+        
+        if (!response.ok) {
+            throw new Error(`POF API error: ${response.statusText}`);
+        }
+        
+        // Get the JSON array of phrases
+        const phrasesArray = await response.json();
+        console.log(phrasesArray);
+        if (Array.isArray(phrasesArray) && phrasesArray.length > 0) {
+            // Store the phrases and switch to POF mode
+            pofPhrases = phrasesArray.map(phrase => phrase.trim()).filter(phrase => phrase.length > 0);
+            currentPOFPhraseIndex = 0;
+            isInPOFMode = true;
+            
+            // Display and play the first POF phrase
+            if (pofPhrases.length > 0) {
+                phraseDisplayData.currentPhrase = pofPhrases[0];
+                phraseDisplayData.isVLM = true; // Mark as POF phrase (uses voice.mp3)
+                phraseDisplayData.lastUpdateTime = Date.now();
+                
+                // Play audio for first POF phrase
+                playPhraseAudio(pofPhrases[0], true);
+            }
+        } else {
+            throw new Error('POF API returned invalid or empty array');
+        }
+    } catch (error) {
+        console.error('Error fetching POF phrases:', error);
+        // On error, stay in local phrase mode and continue with local phrases
+        isInPOFMode = false;
+        pofPhrases = [];
+        currentPOFPhraseIndex = 0;
+    } finally {
+        pofRequestInProgress = false;
+    }
 }
 
 // Detect faces and draw results
@@ -508,22 +660,32 @@ async function detectFaces() {
         
         // If there's a current phrase but audio hasn't been played yet, play it
         if (phraseDisplayData.currentPhrase && phraseDisplayData.audioFinishTime === 0 && !currentAudio) {
-            playPhraseAudio(phraseDisplayData.currentPhrase);
+            playPhraseAudio(phraseDisplayData.currentPhrase, phraseDisplayData.isVLM);
         }
         
         if (canUpdate && (timeSinceLastUpdate >= PHRASE_UPDATE_INTERVAL || 
             (timeSinceLastUpdate >= 1000 && (emotionChanged || speedChanged)))) {
             if (phraseSelector.ready) {
-                const newPhrase = phraseSelector.selectPhrase(dominantEmotionX, speedPixelsPerFrame);
-                if (newPhrase && newPhrase !== phraseDisplayData.currentPhrase) {
-                    phraseDisplayData.currentPhrase = newPhrase;
-                    phraseDisplayData.lastUpdateTime = currentTime;
-                    phraseDisplayData.lastEmotion = dominantEmotionX;
-                    phraseDisplayData.lastSpeed = speedPixelsPerFrame;
+                // If we're in POF mode, don't update phrases here (they're handled by audio.onended)
+                if (!isInPOFMode) {
+                    // We're in local phrase mode
+                    localPhraseCount++;
                     
-                    // Play audio for the new phrase immediately
-                    playPhraseAudio(newPhrase);
+                    // Check if we've shown 3 local phrases and should call POF
+                    if (localPhraseCount >= LOCAL_PHRASES_BEFORE_POF && !pofRequestInProgress) {
+                        // Reset counter and trigger POF fetch
+                        localPhraseCount = 0;
+                        fetchPOFPhrases().catch(error => {
+                            console.error('POF fetch failed:', error);
+                            // On error, continue with local phrases
+                            selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
+                        });
+                    } else {
+                        // Select local phrase normally
+                        selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
+                    }
                 }
+                // If isInPOFMode is true, do nothing - let POF phrases play out via audio.onended
             }
         }
     } else {
@@ -644,8 +806,6 @@ async function detectFaces() {
     if (largestFace && phraseDisplayData.currentPhrase) {
         const box = largestFace.detection.box;
         const phraseFontSize = Math.max(14, box.width / 30);
-        ctx.font = `italic ${phraseFontSize}px Arial`;
-        ctx.fillStyle = '#FFD700'; // Gold color for phrases
         ctx.textBaseline = 'top';
         
         // Draw phrase below the face box
@@ -663,11 +823,12 @@ async function detectFaces() {
                 phraseFontSize + 4
             );
         }        
-        // Draw phrase text
-        // Option 1: Make the phrase text larger (increase font size significantly)
-        ctx.fillStyle = '#FFD700';
+        
+        // Draw phrase text - use red for VLM phrases, gold for local phrases
+        const phraseText = phraseDisplayData.currentPhrase.replace(/\+/g, '');
+        ctx.fillStyle = phraseDisplayData.isVLM ? '#FF0000' : '#FFD700'; // Red for VLM, gold for local
         ctx.font = `italic bold ${phraseFontSize * 1.6}px Arial, sans-serif`; // Increase size by 60%
-        ctx.fillText(phraseDisplayData.currentPhrase.replace(/\+/g, ''), phraseX, phraseY);
+        ctx.fillText(phraseText, phraseX, phraseY);
 
     }
     // Continue detection loop (target ~30 FPS)
@@ -676,7 +837,7 @@ async function detectFaces() {
 
 // Event listeners
 startBtn.addEventListener('click', startCamera);
-stopBtn.addEventListener('click', stopCamera);
+closeBtn.addEventListener('click', stopCamera);
 
 // Initialize on page load
 window.addEventListener('load', async () => {
