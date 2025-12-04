@@ -3,8 +3,10 @@ const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
+const closeBtn = document.getElementById('closeBtn');
 const statusEl = document.getElementById('status');
+const fullScreenView = document.getElementById('fullScreenView');
+const startScreen = document.getElementById('startScreen');
 
 let isRunning = false;
 let detectionInterval = null;
@@ -73,6 +75,7 @@ async function loadModels() {
 // Start webcam
 async function startCamera() {
     try {
+        startBtn.disabled = true;
         statusEl.textContent = 'Accessing camera...';
         statusEl.className = 'loading';
         
@@ -99,8 +102,11 @@ async function startCamera() {
             
             statusEl.textContent = 'Camera ready';
             statusEl.className = 'success';
-            startBtn.disabled = true;
-            stopBtn.disabled = false;
+            
+            // Switch to full-screen view
+            startScreen.style.display = 'none';
+            fullScreenView.classList.remove('hidden');
+            
             isRunning = true;
             
             // Start detection loop
@@ -110,6 +116,7 @@ async function startCamera() {
         console.error('Error accessing camera:', error);
         statusEl.textContent = 'Error accessing camera. Please allow camera permissions.';
         statusEl.className = 'error';
+        startBtn.disabled = false;
     }
 }
 
@@ -155,9 +162,12 @@ function stopCamera() {
     frameCount = 0;
     frameBuffer.length = 0; // Clear frame buffer
     
+    // Switch back to start screen
+    fullScreenView.classList.add('hidden');
+    startScreen.style.display = 'flex';
+    
     isRunning = false;
     startBtn.disabled = false;
-    stopBtn.disabled = true;
     statusEl.textContent = 'Camera stopped';
     statusEl.className = '';
 }
@@ -827,7 +837,7 @@ async function detectFaces() {
 
 // Event listeners
 startBtn.addEventListener('click', startCamera);
-stopBtn.addEventListener('click', stopCamera);
+closeBtn.addEventListener('click', stopCamera);
 
 // Initialize on page load
 window.addEventListener('load', async () => {

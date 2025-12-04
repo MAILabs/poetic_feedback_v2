@@ -7,18 +7,21 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
-        <h1>Live Face Detection</h1>
+    <!-- Initial screen with Start button -->
+    <div id="startScreen" class="start-screen">
+        <div class="start-container">
+            <h1>Live Face Detection</h1>
+            <button id="startBtn">Start</button>
+            <p class="status-text">Status: <span id="status">Initializing...</span></p>
+        </div>
+    </div>
+
+    <!-- Full-screen view -->
+    <div id="fullScreenView" class="full-screen-view hidden">
+        <button id="closeBtn" class="close-button">×</button>
         <div class="video-container">
             <video id="video" autoplay muted playsinline></video>
             <canvas id="canvas"></canvas>
-        </div>
-        <div class="controls">
-            <button id="startBtn">Start Camera</button>
-            <button id="stopBtn" disabled>Stop Camera</button>
-        </div>
-        <div class="info">
-            <p>Status: <span id="status">Initializing...</span></p>
         </div>
     </div>
     
