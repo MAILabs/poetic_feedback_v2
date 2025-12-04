@@ -31,10 +31,13 @@ const PHRASE_POST_AUDIO_DELAY = 2500; // Wait 2.5 seconds after audio finishes b
 // Audio playback tracking
 let currentAudio = null; // Currently playing Audio object
 
-// VLM phrase generation tracking
-let localPhraseCount = 0; // Counter for local phrases selected
-let vlmRequestInProgress = false; // Track if VLM request is currently in progress
-const VLM_TRIGGER_INTERVAL = 3; // Trigger VLM every 3 local phrases
+// Phrase cycle tracking
+let localPhraseCount = 0; // Counter for local phrases selected (reset after 3)
+let isInPOFMode = false; // Whether we're currently displaying POF phrases
+let pofPhrases = []; // Array of phrases from POF endpoint
+let currentPOFPhraseIndex = 0; // Current index in POF phrases array
+let pofRequestInProgress = false; // Track if POF request is currently in progress
+const LOCAL_PHRASES_BEFORE_POF = 3; // Number of local phrases before calling POF
 
 // Video frame buffer for blur effect (moving average over last 5 frames)
 const FRAME_BUFFER_SIZE = 5;
@@ -142,9 +145,12 @@ function stopCamera() {
         audioFinishTime: 0,
         isVLM: false
     };
-    // Reset VLM tracking
+    // Reset phrase cycle tracking
     localPhraseCount = 0;
-    vlmRequestInProgress = false;
+    isInPOFMode = false;
+    pofPhrases = [];
+    currentPOFPhraseIndex = 0;
+    pofRequestInProgress = false;
     previousDetections = [];
     frameCount = 0;
     frameBuffer.length = 0; // Clear frame buffer
@@ -390,6 +396,27 @@ function playPhraseAudio(phrase, isVLM = false) {
         // Audio finished, set finish time (with small buffer)
         phraseDisplayData.audioFinishTime = Date.now();
         currentAudio = null;
+        
+        // If we're in POF mode, move to next phrase
+        if (isInPOFMode && pofPhrases.length > 0) {
+            currentPOFPhraseIndex++;
+            
+            if (currentPOFPhraseIndex < pofPhrases.length) {
+                // There are more POF phrases, display and play the next one
+                setTimeout(() => {
+                    phraseDisplayData.currentPhrase = pofPhrases[currentPOFPhraseIndex];
+                    phraseDisplayData.lastUpdateTime = Date.now();
+                    // Play audio for next POF phrase after a short delay    
+                    playPhraseAudio(pofPhrases[currentPOFPhraseIndex], true);
+                }, PHRASE_POST_AUDIO_DELAY);
+            } else {
+                // All POF phrases are done, switch back to local phrases
+                isInPOFMode = false;
+                pofPhrases = [];
+                currentPOFPhraseIndex = 0;
+                localPhraseCount = 0; // Reset counter to start new cycle
+            }
+        }
     };
     
     audio.onerror = (error) => {
@@ -436,14 +463,14 @@ function captureFrameAsJPG() {
     });
 }
 
-// Generate phrase using VLM API
-async function generateVLMPhrase() {
-    if (vlmRequestInProgress) {
+// Fetch phrases from POF endpoint
+async function fetchPOFPhrases() {
+    if (pofRequestInProgress) {
         return; // Don't start another request if one is in progress
     }
     
     try {
-        vlmRequestInProgress = true;
+        pofRequestInProgress = true;
         
         // Capture current frame as JPG
         const imageBlob = await captureFrameAsJPG();
@@ -457,26 +484,38 @@ async function generateVLMPhrase() {
         });
         
         if (!response.ok) {
-            throw new Error(`VLM API error: ${response.statusText}`);
+            throw new Error(`POF API error: ${response.statusText}`);
         }
         
-        // Get the generated phrase
-        const vlmPhrase = await response.text();
-        
-        if (vlmPhrase && vlmPhrase.trim()) {
-            // Update phrase display with VLM-generated phrase
-            phraseDisplayData.currentPhrase = vlmPhrase.trim();
-            phraseDisplayData.isVLM = true;
-            phraseDisplayData.lastUpdateTime = Date.now();
+        // Get the JSON array of phrases
+        const phrasesArray = await response.json();
+        console.log(phrasesArray);
+        if (Array.isArray(phrasesArray) && phrasesArray.length > 0) {
+            // Store the phrases and switch to POF mode
+            pofPhrases = phrasesArray.map(phrase => phrase.trim()).filter(phrase => phrase.length > 0);
+            currentPOFPhraseIndex = 0;
+            isInPOFMode = true;
             
-            // Play audio for VLM phrase
-            playPhraseAudio(vlmPhrase.trim(), true);
+            // Display and play the first POF phrase
+            if (pofPhrases.length > 0) {
+                phraseDisplayData.currentPhrase = pofPhrases[0];
+                phraseDisplayData.isVLM = true; // Mark as POF phrase (uses voice.mp3)
+                phraseDisplayData.lastUpdateTime = Date.now();
+                
+                // Play audio for first POF phrase
+                playPhraseAudio(pofPhrases[0], true);
+            }
+        } else {
+            throw new Error('POF API returned invalid or empty array');
         }
     } catch (error) {
-        console.error('Error generating VLM phrase:', error);
-        // On error, don't update the phrase - keep the current one
+        console.error('Error fetching POF phrases:', error);
+        // On error, stay in local phrase mode and continue with local phrases
+        isInPOFMode = false;
+        pofPhrases = [];
+        currentPOFPhraseIndex = 0;
     } finally {
-        vlmRequestInProgress = false;
+        pofRequestInProgress = false;
     }
 }
 
@@ -617,21 +656,26 @@ async function detectFaces() {
         if (canUpdate && (timeSinceLastUpdate >= PHRASE_UPDATE_INTERVAL || 
             (timeSinceLastUpdate >= 1000 && (emotionChanged || speedChanged)))) {
             if (phraseSelector.ready) {
-                // Check if we should trigger VLM (every 3rd local phrase)
-                localPhraseCount++;
-                const shouldTriggerVLM = (localPhraseCount % VLM_TRIGGER_INTERVAL === 0) && !vlmRequestInProgress;
-                
-                if (shouldTriggerVLM) {
-                    // Trigger VLM phrase generation asynchronously
-                    generateVLMPhrase().catch(error => {
-                        console.error('VLM generation failed:', error);
-                        // Fall back to local phrase if VLM fails
+                // If we're in POF mode, don't update phrases here (they're handled by audio.onended)
+                if (!isInPOFMode) {
+                    // We're in local phrase mode
+                    localPhraseCount++;
+                    
+                    // Check if we've shown 3 local phrases and should call POF
+                    if (localPhraseCount >= LOCAL_PHRASES_BEFORE_POF && !pofRequestInProgress) {
+                        // Reset counter and trigger POF fetch
+                        localPhraseCount = 0;
+                        fetchPOFPhrases().catch(error => {
+                            console.error('POF fetch failed:', error);
+                            // On error, continue with local phrases
+                            selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
+                        });
+                    } else {
+                        // Select local phrase normally
                         selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
-                    });
-                } else {
-                    // Select local phrase normally
-                    selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
+                    }
                 }
+                // If isInPOFMode is true, do nothing - let POF phrases play out via audio.onended
             }
         }
     } else {
