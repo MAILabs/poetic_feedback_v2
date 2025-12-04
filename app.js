@@ -17,18 +17,24 @@ const SPEED_WINDOW_SIZE = 30; // Number of frames to average speed over
 const MIN_FRAMES_FOR_SPEED = 5; // Minimum frames before showing speed
 
 // Phrase display tracking (single phrase for largest face)
-let phraseDisplayData = { // {currentPhrase: string, lastUpdateTime: number, lastEmotion: string, lastSpeed: number, audioFinishTime: number}
+let phraseDisplayData = { // {currentPhrase: string, lastUpdateTime: number, lastEmotion: string, lastSpeed: number, audioFinishTime: number, isVLM: boolean}
     currentPhrase: null,
     lastUpdateTime: 0,
     lastEmotion: 'neutral',
     lastSpeed: null,
-    audioFinishTime: 0 // When the current audio will finish playing
+    audioFinishTime: 0, // When the current audio will finish playing
+    isVLM: false // Whether this phrase is VLM-generated
 };
 const PHRASE_UPDATE_INTERVAL = 3000; // Update phrase every 3 seconds (in milliseconds)
 const PHRASE_POST_AUDIO_DELAY = 2500; // Wait 2.5 seconds after audio finishes before next phrase (in milliseconds)
 
 // Audio playback tracking
 let currentAudio = null; // Currently playing Audio object
+
+// VLM phrase generation tracking
+let localPhraseCount = 0; // Counter for local phrases selected
+let vlmRequestInProgress = false; // Track if VLM request is currently in progress
+const VLM_TRIGGER_INTERVAL = 3; // Trigger VLM every 3 local phrases
 
 // Video frame buffer for blur effect (moving average over last 5 frames)
 const FRAME_BUFFER_SIZE = 5;
@@ -133,8 +139,12 @@ function stopCamera() {
         lastUpdateTime: 0,
         lastEmotion: 'neutral',
         lastSpeed: null,
-        audioFinishTime: 0
+        audioFinishTime: 0,
+        isVLM: false
     };
+    // Reset VLM tracking
+    localPhraseCount = 0;
+    vlmRequestInProgress = false;
     previousDetections = [];
     frameCount = 0;
     frameBuffer.length = 0; // Clear frame buffer
@@ -319,6 +329,21 @@ function getAverageSpeed(faceId) {
     };
 }
 
+// Helper function to select and display local phrase
+function selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime) {
+    const newPhrase = phraseSelector.selectPhrase(dominantEmotionX, speedPixelsPerFrame);
+    if (newPhrase && newPhrase !== phraseDisplayData.currentPhrase) {
+        phraseDisplayData.currentPhrase = newPhrase;
+        phraseDisplayData.lastUpdateTime = currentTime;
+        phraseDisplayData.lastEmotion = dominantEmotionX;
+        phraseDisplayData.lastSpeed = speedPixelsPerFrame;
+        phraseDisplayData.isVLM = false;
+        
+        // Play audio for the new phrase immediately
+        playPhraseAudio(newPhrase, false);
+    }
+}
+
 // Convert phrase text to filename format (remove punctuation, replace spaces with underscores, add .wav)
 function phraseToFilename(phrase) {
     if (!phrase) return null;
@@ -332,8 +357,8 @@ function phraseToFilename(phrase) {
     return filename + '.wav';
 }
 
-// Play audio for a phrase
-function playPhraseAudio(phrase) {
+// Play audio for a phrase (local or VLM)
+function playPhraseAudio(phrase, isVLM = false) {
     if (!phrase) return;
     
     // Stop any currently playing audio
@@ -342,10 +367,17 @@ function playPhraseAudio(phrase) {
         currentAudio = null;
     }
     
-    const filename = phraseToFilename(phrase);
-    if (!filename) return;
+    let audioPath;
+    if (isVLM) {
+        // For VLM phrases, use the voice.mp3 endpoint
+        audioPath = 'http://dh.ycloud.eazify.net:8000/voice.mp3';
+    } else {
+        // For local phrases, use the vocals directory
+        const filename = phraseToFilename(phrase);
+        if (!filename) return;
+        audioPath = `vocals/${filename}`;
+    }
     
-    const audioPath = `vocals/${filename}`;
     const audio = new Audio(audioPath);
     
     audio.onloadeddata = () => {
@@ -375,6 +407,77 @@ function playPhraseAudio(phrase) {
     });
     
     currentAudio = audio;
+}
+
+// Capture current video frame as JPG blob
+function captureFrameAsJPG() {
+    return new Promise((resolve, reject) => {
+        try {
+            // Create a temporary canvas to capture the video frame
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Draw current video frame to canvas
+            tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+            
+            // Convert to blob (JPG)
+            tempCanvas.toBlob((blob) => {
+                if (blob) {
+                    resolve(blob);
+                } else {
+                    reject(new Error('Failed to create blob from canvas'));
+                }
+            }, 'image/jpeg', 0.9); // 90% quality
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+// Generate phrase using VLM API
+async function generateVLMPhrase() {
+    if (vlmRequestInProgress) {
+        return; // Don't start another request if one is in progress
+    }
+    
+    try {
+        vlmRequestInProgress = true;
+        
+        // Capture current frame as JPG
+        const imageBlob = await captureFrameAsJPG();
+        
+        const response = await fetch('http://dh.ycloud.eazify.net:8000/pof', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'image/jpeg'
+            },
+            body: imageBlob
+        });
+        
+        if (!response.ok) {
+            throw new Error(`VLM API error: ${response.statusText}`);
+        }
+        
+        // Get the generated phrase
+        const vlmPhrase = await response.text();
+        
+        if (vlmPhrase && vlmPhrase.trim()) {
+            // Update phrase display with VLM-generated phrase
+            phraseDisplayData.currentPhrase = vlmPhrase.trim();
+            phraseDisplayData.isVLM = true;
+            phraseDisplayData.lastUpdateTime = Date.now();
+            
+            // Play audio for VLM phrase
+            playPhraseAudio(vlmPhrase.trim(), true);
+        }
+    } catch (error) {
+        console.error('Error generating VLM phrase:', error);
+        // On error, don't update the phrase - keep the current one
+    } finally {
+        vlmRequestInProgress = false;
+    }
 }
 
 // Detect faces and draw results
@@ -508,21 +611,26 @@ async function detectFaces() {
         
         // If there's a current phrase but audio hasn't been played yet, play it
         if (phraseDisplayData.currentPhrase && phraseDisplayData.audioFinishTime === 0 && !currentAudio) {
-            playPhraseAudio(phraseDisplayData.currentPhrase);
+            playPhraseAudio(phraseDisplayData.currentPhrase, phraseDisplayData.isVLM);
         }
         
         if (canUpdate && (timeSinceLastUpdate >= PHRASE_UPDATE_INTERVAL || 
             (timeSinceLastUpdate >= 1000 && (emotionChanged || speedChanged)))) {
             if (phraseSelector.ready) {
-                const newPhrase = phraseSelector.selectPhrase(dominantEmotionX, speedPixelsPerFrame);
-                if (newPhrase && newPhrase !== phraseDisplayData.currentPhrase) {
-                    phraseDisplayData.currentPhrase = newPhrase;
-                    phraseDisplayData.lastUpdateTime = currentTime;
-                    phraseDisplayData.lastEmotion = dominantEmotionX;
-                    phraseDisplayData.lastSpeed = speedPixelsPerFrame;
-                    
-                    // Play audio for the new phrase immediately
-                    playPhraseAudio(newPhrase);
+                // Check if we should trigger VLM (every 3rd local phrase)
+                localPhraseCount++;
+                const shouldTriggerVLM = (localPhraseCount % VLM_TRIGGER_INTERVAL === 0) && !vlmRequestInProgress;
+                
+                if (shouldTriggerVLM) {
+                    // Trigger VLM phrase generation asynchronously
+                    generateVLMPhrase().catch(error => {
+                        console.error('VLM generation failed:', error);
+                        // Fall back to local phrase if VLM fails
+                        selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
+                    });
+                } else {
+                    // Select local phrase normally
+                    selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
                 }
             }
         }
@@ -644,8 +752,6 @@ async function detectFaces() {
     if (largestFace && phraseDisplayData.currentPhrase) {
         const box = largestFace.detection.box;
         const phraseFontSize = Math.max(14, box.width / 30);
-        ctx.font = `italic ${phraseFontSize}px Arial`;
-        ctx.fillStyle = '#FFD700'; // Gold color for phrases
         ctx.textBaseline = 'top';
         
         // Draw phrase below the face box
@@ -663,11 +769,12 @@ async function detectFaces() {
                 phraseFontSize + 4
             );
         }        
-        // Draw phrase text
-        // Option 1: Make the phrase text larger (increase font size significantly)
-        ctx.fillStyle = '#FFD700';
+        
+        // Draw phrase text - use red for VLM phrases, gold for local phrases
+        const phraseText = phraseDisplayData.currentPhrase.replace(/\+/g, '');
+        ctx.fillStyle = phraseDisplayData.isVLM ? '#FF0000' : '#FFD700'; // Red for VLM, gold for local
         ctx.font = `italic bold ${phraseFontSize * 1.6}px Arial, sans-serif`; // Increase size by 60%
-        ctx.fillText(phraseDisplayData.currentPhrase.replace(/\+/g, ''), phraseX, phraseY);
+        ctx.fillText(phraseText, phraseX, phraseY);
 
     }
     // Continue detection loop (target ~30 FPS)
