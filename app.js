@@ -15,7 +15,7 @@ let detectionInterval = null;
 const faceMovementData = new Map(); // faceId -> {positions: [], speeds: [], timestamps: []}
 let frameCount = 0;
 let previousDetections = [];
-const SPEED_WINDOW_SIZE = 20; // Number of frames to average speed over
+const SPEED_WINDOW_SIZE = 5; // Number of frames to average speed over
 const MIN_FRAMES_FOR_SPEED = 5; // Minimum frames before showing speed
 
 // Message playback configuration
@@ -476,7 +476,6 @@ function playPhraseAudio(phrase, isVLM = false) {
     
     // Set currentAudio before attempting to play
     currentAudio = audio;
-    
     // Play the audio
     audio.play().catch(error => {
         // Prevent multiple error handlers from firing
@@ -795,7 +794,7 @@ async function detectFaces() {
         // Get movement speed
         const speedData = getAverageSpeed(faceId);
         const speedText = speedData 
-            ? `Speed: ${speedData.speedPerSecond.toFixed(1)} px/s`
+            ? `Speed: ${speedData.speedPerSecond.toFixed(1)} px/s (${phraseSelector.getSpeedCategory(speedData.speedPerSecond)})`
             : 'Speed: calculating...';
         
         // Draw rectangle around face
