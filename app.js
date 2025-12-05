@@ -15,23 +15,22 @@ let detectionInterval = null;
 const faceMovementData = new Map(); // faceId -> {positions: [], speeds: [], timestamps: []}
 let frameCount = 0;
 let previousDetections = [];
-const SPEED_WINDOW_SIZE = 30; // Number of frames to average speed over
+const SPEED_WINDOW_SIZE = 20; // Number of frames to average speed over
 const MIN_FRAMES_FOR_SPEED = 5; // Minimum frames before showing speed
 
-// Phrase display tracking (single phrase for largest face)
-let phraseDisplayData = { // {currentPhrase: string, lastUpdateTime: number, lastEmotion: string, lastSpeed: number, audioFinishTime: number, isVLM: boolean}
+// Message playback configuration
+const MESSAGE_DELAY_MS = 500; // Delay between messages (0-1000ms, easily configurable)
+
+// Phrase display tracking
+let phraseDisplayData = {
     currentPhrase: null,
-    lastUpdateTime: 0,
-    lastEmotion: 'neutral',
-    lastSpeed: null,
-    audioFinishTime: 0, // When the current audio will finish playing
-    isVLM: false // Whether this phrase is VLM-generated
+    isVLM: false // Whether this phrase is from POF service
 };
-const PHRASE_UPDATE_INTERVAL = 3000; // Update phrase every 3 seconds (in milliseconds)
-const PHRASE_POST_AUDIO_DELAY = 2500; // Wait 2.5 seconds after audio finishes before next phrase (in milliseconds)
 
 // Audio playback tracking
 let currentAudio = null; // Currently playing Audio object
+let isWaitingForNextMessage = false; // Flag to prevent multiple simultaneous message triggers
+let nextMessageTimeout = null; // Timeout for delayed next message
 
 // Phrase cycle tracking
 let localPhraseCount = 0; // Counter for local phrases selected (reset after 3)
@@ -41,8 +40,11 @@ let currentPOFPhraseIndex = 0; // Current index in POF phrases array
 let pofRequestInProgress = false; // Track if POF request is currently in progress
 const LOCAL_PHRASES_BEFORE_POF = 3; // Number of local phrases before calling POF
 
+// Face tracking for reset detection
+let lastFaceId = null; // Track face ID to detect new person
+
 // Video frame buffer for blur effect (moving average over last 5 frames)
-const FRAME_BUFFER_SIZE = 5;
+const FRAME_BUFFER_SIZE = 3;
 const frameBuffer = [];
 let offscreenCanvas = null;
 let offscreenCtx = null;
@@ -143,21 +145,27 @@ function stopCamera() {
         currentAudio.pause();
         currentAudio = null;
     }
+    
+    // Clear any pending timeout
+    if (nextMessageTimeout) {
+        clearTimeout(nextMessageTimeout);
+        nextMessageTimeout = null;
+    }
+    
     // Reset phrase display data
     phraseDisplayData = {
         currentPhrase: null,
-        lastUpdateTime: 0,
-        lastEmotion: 'neutral',
-        lastSpeed: null,
-        audioFinishTime: 0,
         isVLM: false
     };
+    
     // Reset phrase cycle tracking
+    isWaitingForNextMessage = false;
     localPhraseCount = 0;
     isInPOFMode = false;
     pofPhrases = [];
     currentPOFPhraseIndex = 0;
     pofRequestInProgress = false;
+    lastFaceId = null;
     previousDetections = [];
     frameCount = 0;
     frameBuffer.length = 0; // Clear frame buffer
@@ -345,22 +353,43 @@ function getAverageSpeed(faceId) {
     };
 }
 
-// Helper function to select and display local phrase
-function selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime) {
+// Reset phrase cycle when new person appears
+function resetPhraseCycle() {
+    // Stop any playing audio
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+    }
+    
+    // Clear any pending timeout
+    if (nextMessageTimeout) {
+        clearTimeout(nextMessageTimeout);
+        nextMessageTimeout = null;
+    }
+    
+    // Reset all state
+    phraseDisplayData.currentPhrase = null;
+    isWaitingForNextMessage = false;
+    localPhraseCount = 0;
+    isInPOFMode = false;
+    pofPhrases = [];
+    currentPOFPhraseIndex = 0;
+    pofRequestInProgress = false;
+}
+
+// Helper function to select and play local phrase
+function selectAndPlayLocalPhrase(dominantEmotionX, speedPixelsPerFrame) {
     const newPhrase = phraseSelector.selectPhrase(dominantEmotionX, speedPixelsPerFrame);
-    if (newPhrase && newPhrase !== phraseDisplayData.currentPhrase) {
-        phraseDisplayData.currentPhrase = newPhrase;
-        phraseDisplayData.lastUpdateTime = currentTime;
-        phraseDisplayData.lastEmotion = dominantEmotionX;
-        phraseDisplayData.lastSpeed = speedPixelsPerFrame;
-        phraseDisplayData.isVLM = false;
-        
+    if (newPhrase) {
         // Play audio for the new phrase immediately
         playPhraseAudio(newPhrase, false);
+    } else {
+        // If no phrase selected, trigger next message
+        triggerNextMessage();
     }
 }
 
-// Convert phrase text to filename format (remove punctuation, replace spaces with underscores, add .wav)
+// Convert phrase text to filename format (remove punctuation, replace spaces with underscores, add .mp3)
 function phraseToFilename(phrase) {
     if (!phrase) return null;
     // Remove punctuation but keep letters (including Cyrillic), numbers, spaces, and + character
@@ -369,13 +398,17 @@ function phraseToFilename(phrase) {
     // Replace spaces with underscores
     filename = filename.replace(/\s+/g, '_');
     filename = filename.replace(/\+/g, '');
-    // Add .wav extension
-    return filename + '.wav';
+    // Add .mp3 extension
+    return filename + '.mp3';
 }
 
-// Play audio for a phrase (local or VLM)
+// Play audio for a phrase (local or POF) - event-driven
 function playPhraseAudio(phrase, isVLM = false) {
-    if (!phrase) return;
+    if (!phrase) {
+        // If no phrase, trigger next message immediately
+        triggerNextMessage();
+        return;
+    }
     
     // Stop any currently playing audio
     if (currentAudio) {
@@ -383,68 +416,118 @@ function playPhraseAudio(phrase, isVLM = false) {
         currentAudio = null;
     }
     
+    // Clear any pending timeout
+    if (nextMessageTimeout) {
+        clearTimeout(nextMessageTimeout);
+        nextMessageTimeout = null;
+    }
+    
+    // Update display immediately
+    phraseDisplayData.currentPhrase = phrase;
+    phraseDisplayData.isVLM = isVLM;
+    
     let audioPath;
     if (isVLM) {
-        // For VLM phrases, use the voice.mp3 endpoint
+        // For POF phrases, use the voice.mp3 endpoint
         audioPath = 'https://dh.ycloud.eazify.net:8443/voice.mp3';
     } else {
         // For local phrases, use the vocals directory
         const filename = phraseToFilename(phrase);
-        if (!filename) return;
+        if (!filename) {
+            triggerNextMessage();
+            return;
+        }
         audioPath = `vocals/${filename}`;
     }
     
     const audio = new Audio(audioPath);
-    
-    audio.onloadeddata = () => {
-        // Calculate when audio will finish
-        const duration = audio.duration * 1000; // Convert to milliseconds
-        phraseDisplayData.audioFinishTime = Date.now() + duration;
-    };
+    isWaitingForNextMessage = false;
+    let audioErrored = false; // Flag to track if audio has errored
     
     audio.onended = () => {
-        // Audio finished, set finish time (with small buffer)
-        phraseDisplayData.audioFinishTime = Date.now();
-        currentAudio = null;
-        
-        // If we're in POF mode, move to next phrase
-        if (isInPOFMode && pofPhrases.length > 0) {
-            currentPOFPhraseIndex++;
+        // Only handle ended if audio didn't error
+        if (!audioErrored && currentAudio === audio) {
+            // Audio finished - trigger next message after delay
+            currentAudio = null;
+            isWaitingForNextMessage = false;
             
-            if (currentPOFPhraseIndex < pofPhrases.length) {
-                // There are more POF phrases, display and play the next one
-                setTimeout(() => {
-                    phraseDisplayData.currentPhrase = pofPhrases[currentPOFPhraseIndex];
-                    phraseDisplayData.lastUpdateTime = Date.now();
-                    // Play audio for next POF phrase after a short delay    
-                    playPhraseAudio(pofPhrases[currentPOFPhraseIndex], true);
-                }, PHRASE_POST_AUDIO_DELAY);
-            } else {
-                // All POF phrases are done, switch back to local phrases
-                isInPOFMode = false;
-                pofPhrases = [];
-                currentPOFPhraseIndex = 0;
-                localPhraseCount = 0; // Reset counter to start new cycle
-            }
+            // Wait for configured delay, then trigger next message
+            nextMessageTimeout = setTimeout(() => {
+                triggerNextMessage();
+            }, MESSAGE_DELAY_MS);
         }
     };
     
     audio.onerror = (error) => {
+        // Prevent multiple error handlers from firing
+        if (audioErrored) return;
+        audioErrored = true;
+        
         console.warn(`Failed to load audio file: ${audioPath}`, error);
-        // If audio fails to load, set finish time immediately so we don't wait forever
-        phraseDisplayData.audioFinishTime = Date.now();
-        currentAudio = null;
+        // If audio fails to load, skip this phrase immediately
+        if (currentAudio === audio) {
+            currentAudio = null;
+        }
+        phraseDisplayData.currentPhrase = null; // Clear the failed phrase from display
+        isWaitingForNextMessage = false;
+        // Trigger next message immediately (no delay)
+        triggerNextMessage();
     };
+    
+    // Set currentAudio before attempting to play
+    currentAudio = audio;
     
     // Play the audio
     audio.play().catch(error => {
+        // Prevent multiple error handlers from firing
+        if (audioErrored) return;
+        audioErrored = true;
+        
         console.warn(`Failed to play audio: ${audioPath}`, error);
-        phraseDisplayData.audioFinishTime = Date.now();
-        currentAudio = null;
+        // If play fails, skip this phrase immediately
+        if (currentAudio === audio) {
+            currentAudio = null;
+        }
+        phraseDisplayData.currentPhrase = null; // Clear the failed phrase from display
+        isWaitingForNextMessage = false;
+        // Trigger next message immediately (no delay)
+        triggerNextMessage();
     });
-    
-    currentAudio = audio;
 }
+
+// Trigger next message in sequence
+function triggerNextMessage() {
+    if (isWaitingForNextMessage) {
+        // Already triggered, prevent duplicate
+        return;
+    }
+    
+    isWaitingForNextMessage = true;
+    
+    // If we're in POF mode, move to next POF phrase
+    if (isInPOFMode && pofPhrases.length > 0) {
+        currentPOFPhraseIndex++;
+        
+        if (currentPOFPhraseIndex < pofPhrases.length) {
+            // There are more POF phrases, play the next one
+            isWaitingForNextMessage = false;
+            playPhraseAudio(pofPhrases[currentPOFPhraseIndex], true);
+        } else {
+            // All POF phrases are done, switch back to local phrases
+            isInPOFMode = false;
+            pofPhrases = [];
+            currentPOFPhraseIndex = 0;
+            localPhraseCount = 0; // Reset counter to start new cycle
+            // Set flag to request next local phrase (will be handled by detectFaces)
+            isWaitingForNextMessage = false;
+        }
+    } else {
+        // We're in local phrase mode, set flag to request next local phrase
+        // (will be handled by detectFaces when it has face data)
+        isWaitingForNextMessage = false;
+    }
+}
+
 
 // Capture current video frame as JPG blob
 function captureFrameAsJPG() {
@@ -508,12 +591,12 @@ async function fetchPOFPhrases() {
             
             // Display and play the first POF phrase
             if (pofPhrases.length > 0) {
-                phraseDisplayData.currentPhrase = pofPhrases[0];
-                phraseDisplayData.isVLM = true; // Mark as POF phrase (uses voice.mp3)
-                phraseDisplayData.lastUpdateTime = Date.now();
-                
-                // Play audio for first POF phrase
+                isWaitingForNextMessage = false;
                 playPhraseAudio(pofPhrases[0], true);
+            } else {
+                // Empty array, fall back to local phrases
+                isInPOFMode = false;
+                isWaitingForNextMessage = false;
             }
         } else {
             throw new Error('POF API returned invalid or empty array');
@@ -524,6 +607,7 @@ async function fetchPOFPhrases() {
         isInPOFMode = false;
         pofPhrases = [];
         currentPOFPhraseIndex = 0;
+        isWaitingForNextMessage = false;
     } finally {
         pofRequestInProgress = false;
     }
@@ -631,7 +715,14 @@ async function detectFaces() {
         const expressions = largestFace.expressions;
         const faceId = largestFace.faceId;
         
-        // Compute dominant emotion excluding 'neutral'
+        // Check if this is a new person (different face ID)
+        if (lastFaceId !== null && lastFaceId !== faceId) {
+            // New person detected - reset everything
+            // resetPhraseCycle();
+        }
+        lastFaceId = faceId;
+        
+        // Compute dominant emotion excluding 'neutral' for phrase selection
         const emotionsExNeutral = Object.keys(expressions).filter(k => k !== 'neutral');
         let dominantEmotionX = 'neutral';
         if (emotionsExNeutral.length > 0) {
@@ -644,60 +735,34 @@ async function detectFaces() {
         const speedData = getAverageSpeed(faceId);
         const speedPixelsPerFrame = speedData ? speedData.avgSpeed : null;
         
-        // Update phrase if interval has passed or emotion/speed changed significantly
-        // But only if audio has finished playing + delay period
-        const currentTime = Date.now();
-        const timeSinceLastUpdate = currentTime - phraseDisplayData.lastUpdateTime;
-        const timeSinceAudioFinished = currentTime - phraseDisplayData.audioFinishTime;
-        const emotionChanged = phraseDisplayData.lastEmotion !== dominantEmotionX;
-        const speedChanged = phraseDisplayData.lastSpeed !== speedPixelsPerFrame && 
-                            (phraseDisplayData.lastSpeed === null || speedPixelsPerFrame === null || 
-                             Math.abs(phraseDisplayData.lastSpeed - speedPixelsPerFrame) > 50);
-        
-        // Check if we can update (audio must have finished + delay period passed)
-        // If audioFinishTime is 0, it means no audio has been played yet, so allow update
-        const canUpdate = phraseDisplayData.audioFinishTime === 0 || timeSinceAudioFinished >= PHRASE_POST_AUDIO_DELAY;
-        
-        // If there's a current phrase but audio hasn't been played yet, play it
-        if (phraseDisplayData.currentPhrase && phraseDisplayData.audioFinishTime === 0 && !currentAudio) {
-            playPhraseAudio(phraseDisplayData.currentPhrase, phraseDisplayData.isVLM);
-        }
-        
-        if (canUpdate && (timeSinceLastUpdate >= PHRASE_UPDATE_INTERVAL || 
-            (timeSinceLastUpdate >= 1000 && (emotionChanged || speedChanged)))) {
-            if (phraseSelector.ready) {
-                // If we're in POF mode, don't update phrases here (they're handled by audio.onended)
-                if (!isInPOFMode) {
-                    // We're in local phrase mode
-                    localPhraseCount++;
-                    
-                    // Check if we've shown 3 local phrases and should call POF
-                    if (localPhraseCount >= LOCAL_PHRASES_BEFORE_POF && !pofRequestInProgress) {
-                        // Reset counter and trigger POF fetch
-                        localPhraseCount = 0;
-                        fetchPOFPhrases().catch(error => {
-                            console.error('POF fetch failed:', error);
-                            // On error, continue with local phrases
-                            selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
-                        });
-                    } else {
-                        // Select local phrase normally
-                        selectLocalPhrase(dominantEmotionX, speedPixelsPerFrame, currentTime);
-                    }
+        // If no audio is playing and we're not waiting for next message, start a new message
+        if (!currentAudio && !isWaitingForNextMessage && phraseSelector.ready) {
+            // If we're in POF mode, don't do anything here (POF phrases are handled by audio.onended)
+            if (!isInPOFMode) {
+                // We're in local phrase mode
+                localPhraseCount++;
+                
+                // Check if we've shown 3 local phrases and should call POF
+                if (localPhraseCount > LOCAL_PHRASES_BEFORE_POF && !pofRequestInProgress) {
+                    // Reset counter and trigger POF fetch
+                    localPhraseCount = 0;
+                    isWaitingForNextMessage = true; // Prevent multiple triggers
+                    fetchPOFPhrases().catch(error => {
+                        console.error('POF fetch failed:', error);
+                        // On error, continue with local phrases
+                        isWaitingForNextMessage = false;
+                        selectAndPlayLocalPhrase(dominantEmotionX, speedPixelsPerFrame);
+                    });
+                } else {
+                    // Select and play local phrase
+                    selectAndPlayLocalPhrase(dominantEmotionX, speedPixelsPerFrame);
                 }
-                // If isInPOFMode is true, do nothing - let POF phrases play out via audio.onended
             }
         }
     } else {
-        // No faces detected - clear phrase and stop audio
-        if (phraseDisplayData.currentPhrase) {
-            if (currentAudio) {
-                currentAudio.pause();
-                currentAudio = null;
-            }
-            phraseDisplayData.currentPhrase = null;
-            phraseDisplayData.audioFinishTime = Date.now();
-        }
+        // No faces detected - don't start new messages, but let current audio finish playing
+        // Don't reset state - continue from same point when face reappears
+        // Just don't trigger new messages (handled by the if (largestFace) check above)
     }
     
     // Draw detections
