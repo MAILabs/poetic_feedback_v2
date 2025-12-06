@@ -763,7 +763,11 @@ async function detectFaces() {
         // Don't reset state - continue from same point when face reappears
         // Just don't trigger new messages (handled by the if (largestFace) check above)
     }
-    
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.putImageData(drawdata, 0, 0);
+    ctx.save();
+
     // Draw detections
     detections.forEach(detection => {
         const box = detection.detection.box;
@@ -802,9 +806,6 @@ async function detectFaces() {
         // Face detection gives coordinates in the video's natural (non-mirrored) coordinate system
         // Since both video and canvas are mirrored the same way, the coordinates align directly
         // We draw at the same natural coordinates that face detection provides
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.putImageData(drawdata, 0, 0);
-        ctx.save();
         
         ctx.strokeStyle = '#4CAF50';
         ctx.lineWidth = 3;
