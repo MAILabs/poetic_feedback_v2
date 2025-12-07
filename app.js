@@ -766,7 +766,7 @@ async function detectFaces() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.putImageData(drawdata, 0, 0);
-    ctx.save();
+    // ctx.save();
 
     // Draw detections
     detections.forEach(detection => {
@@ -806,12 +806,12 @@ async function detectFaces() {
         // Face detection gives coordinates in the video's natural (non-mirrored) coordinate system
         // Since both video and canvas are mirrored the same way, the coordinates align directly
         // We draw at the same natural coordinates that face detection provides
-        
+
         ctx.strokeStyle = '#4CAF50';
         ctx.lineWidth = 3;
         ctx.strokeRect(box.x, box.y, box.width, box.height);
         
-        ctx.restore();
+        // ctx.restore();
         
         // Prepare text information
         // Since canvas is mirrored via CSS, we need to flip text coordinates
