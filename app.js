@@ -807,7 +807,8 @@ async function detectFaces() {
         // Since both video and canvas are mirrored the same way, the coordinates align directly
         // We draw at the same natural coordinates that face detection provides
 
-        ctx.strokeStyle = '#4CAF50';
+        //ctx.strokeStyle = '#4CAF50';
+        ctx.strokeStyle = '#999999';
         ctx.lineWidth = 3;
         ctx.strokeRect(box.x, box.y, box.width, box.height);
         
@@ -891,7 +892,7 @@ async function detectFaces() {
         
         // Draw phrase text - use red for VLM phrases, gold for local phrases
         const phraseText = phraseDisplayData.currentPhrase.replace(/\+/g, '');
-        ctx.fillStyle = phraseDisplayData.isVLM ? '#FF0000' : '#FFD700'; // Red for VLM, gold for local
+        ctx.fillStyle = phraseDisplayData.isVLM ? '#FF0000' : '#0000FF'; // Red for VLM, gold for local
         ctx.font = `italic bold ${phraseFontSize * 1.6}px Arial, sans-serif`; // Increase size by 60%
         ctx.fillText(phraseText, phraseX, phraseY);
 
